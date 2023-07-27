@@ -2,7 +2,7 @@
 
 # In this example: A Huggingface Stable Diffusion custom model
 from diffusers.utils import load_image
-from diffusers import UniPCMultistepScheduler, StableDiffusionControlNetPipeline, ControlNetModel
+from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
 
 import torch
 
