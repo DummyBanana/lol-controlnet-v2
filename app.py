@@ -1,8 +1,13 @@
 from io import BytesIO
-from potassium import Potassium, Request, Response
-from diffusers import DiffusionPipeline, DDPMScheduler
+import numpy as np
+from PIL import Image
+import cv2
+import base64
 import torch
 import base64
+from diffusers.utils import load_image
+from diffusers import DDPMScheduler, DiffusionPipeline,UniPCMultistepScheduler, StableDiffusionControlNetPipeline, ControlNetModel
+from potassium import Potassium, Request, Response
 
 # create a new Potassium app
 app = Potassium("my_app")
@@ -10,17 +15,11 @@ app = Potassium("my_app")
 # @app.init runs at startup, and loads models into the app's context
 @app.init
 def init():
-    repo_id="Meina/MeinaUnreal_V3"
-
-    ddpm = DDPMScheduler.from_pretrained(repo_id, subfolder="scheduler")
-    
-    model = DiffusionPipeline.from_pretrained(
-        repo_id, 
-        use_safetensors=True,
-        torch_dtype=torch.float16,
-        scheduler=ddpm
+    controlnet = ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-canny", torch_dtype=torch.float16)
+    model = StableDiffusionControlNetPipeline.from_pretrained(
+        "DummyBanana/lol-diffusions", controlnet=controlnet, safety_checker=None, torch_dtype=torch.float16
     ).to("cuda")
-
+   
     context = {
         "model": model,
     }
@@ -30,31 +29,66 @@ def init():
 # @app.handler runs for every call
 @app.handler()
 def handler(context: dict, request: Request) -> Response:
+    
+   #prompt = request.json.get("prompt")
     model = context.get("model")
+    model_inputs = request.json
+   # outputs = model(prompt)
 
-    prompt = request.json.get("prompt")
-    negative_prompt = "(worst quality, low quality:1.4), monochrome, zombie, (interlocked fingers), cleavage, nudity, naked, nude"
+    #return Response(
+    #    json = {"outputs": outputs}, 
+    #    status=200
+    #)
+    prompt = model_inputs.get('prompt', None)
+    negative_prompt = model_inputs.get('negative_prompt', None)
+    num_images_per_prompt = model_inputs.get('num_images_per_prompt',1)
+    num_inference_steps = model_inputs.get('num_inference_steps', 20)
+    image_data = model_inputs.get('image_data', None)
+    if prompt == None:
+        return {'message': "No prompt provided"}
+    
+    # Run the model
+    image = Image.open(BytesIO(base64.b64decode(image_data))).convert("RGB") 
+    image = np.array(image)
+    low_threshold = 100
+    high_threshold = 200
+    image = cv2.Canny(image, low_threshold, high_threshold)
+    image = image[:, :, None]
+    image = np.concatenate([image, image, image], axis=2)
 
-    image = model(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        guidance_scale=7,
-        num_inference_steps=request.json.get("steps", 50),
-        generator=torch.Generator(device="cuda").manual_seed(request.json.get("seed")) if request.json.get("seed") else None,
-        width=512,
-        height=768,
-    ).images[0]
-
+    canny_image = Image.fromarray(image)
     buffered = BytesIO()
-    image.save(buffered, format="JPEG", quality=80)
-    img_str = base64.b64encode(buffered.getvalue())
+    canny_image.save(buffered,format="JPEG")
+    canny_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-    # You could also consider writing this image to S3
-    # and returning the S3 URL instead of the image data
-    # for a slightly faster response time
-
+    model.scheduler = UniPCMultistepScheduler.from_config(model.scheduler.config)
+    model.enable_model_cpu_offload()
+    model.enable_xformers_memory_efficient_attention()
+    output = model(
+        prompt,
+        canny_image,
+        negative_prompt=negative_prompt,
+        num_images_per_prompt=num_images_per_prompt,
+        num_inference_steps=num_inference_steps
+    )
+    restuls_arr = []
+    image = output.images[0]
+    for image in output.images:
+        buffered = BytesIO()
+        image.save(buffered,format="JPEG")
+        image_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        restuls_arr.append(image_base64)
+    
+    # Return the results as a dictionary
+    #return {
+    #    'canny_base64': canny_base64,
+    #    'image_base64': restuls_arr
+    #}
     return Response(
-        json = {"output": str(img_str, "utf-8")}, 
+        json = {
+        'canny_base64': canny_base64,
+        'image_base64': restuls_arr
+    }, 
         status=200
     )
 
