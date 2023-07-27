@@ -5,3 +5,4 @@ accelerate
 triton==2.0.0.post1
 websockets==10.0
 potassium
+scipy
